@@ -1,3 +1,7 @@
+import os
+import re
+import time
+import shutil
 import streamlit as st
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -6,10 +10,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-import shutil
-import os
-import re
-import time
+
+os.environ["PATH"] += os.pathsep + "/usr/bin"
 
 def get_webdriver():
     opts = Options()
@@ -18,31 +20,26 @@ def get_webdriver():
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
 
+    if os.path.exists("/usr/bin/chromium"):
+        opts.binary_location = "/usr/bin/chromium"
+
     sys_drv = shutil.which("chromedriver")
     if sys_drv:
-        if os.path.exists("/usr/bin/chromium"):
-            opts.binary_location = "/usr/bin/chromium"
         service = Service(executable_path=sys_drv)
-        return webdriver.Chrome(service=service, options=opts)
+    else:
+        service = Service(ChromeDriverManager().install())
 
-    path = ChromeDriverManager().install()
-    service = Service(executable_path=path)
-    
     return webdriver.Chrome(service=service, options=opts)
 
 def scrape_text_from_url(url: str) -> list[str]:
     driver = get_webdriver()
     driver.get(url)
 
-    time.sleep(1)
-    last_h = driver.execute_script("return document.body.scrollHeight")
-    while True:
+    time.sleep(2)
+    scroll_limit = 5 
+    for _ in range(scroll_limit):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(1)
-        new_h = driver.execute_script("return document.body.scrollHeight")
-        if new_h == last_h:
-            break
-        last_h = new_h
 
     html = driver.page_source
     driver.quit()
@@ -57,9 +54,9 @@ def scrape_text_from_url(url: str) -> list[str]:
 
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
-model.to("cpu")
+model = AutoModelForSequenceClassification.from_pretrained(model_name, device_map="cpu")
 model.eval()
+device = torch.device("cpu")
 
 labels = [
     'toxicity', 'severe_toxicity', 'obscene',
@@ -85,7 +82,7 @@ def batch_classify_texts(
         word_set |= set(re.findall(r"\b\w{3,}\b", txt.lower()))
     word_list = list(word_set)
 
-    tok_w = tokenizer(word_list, return_tensors="pt", padding=True, truncation=True, max_length=16)
+    tok_w = tokenizer(word_list, return_tensors="pt", padding=True, truncation=True, max_length=16).to(device)
     with torch.no_grad():
         logits_w = model(**tok_w).logits
     scores_w = torch.sigmoid(logits_w).cpu().numpy()
@@ -96,7 +93,7 @@ def batch_classify_texts(
     }
 
     for txt in texts:
-        tok_t = tokenizer(txt, return_tensors="pt", truncation=True, padding=True, max_length=512)
+        tok_t = tokenizer(txt, return_tensors="pt", truncation=True, padding=True, max_length=512).to(device)
         with torch.no_grad():
             logits_t = model(**tok_t).logits
         scores_t = torch.sigmoid(logits_t)[0].cpu().numpy()
