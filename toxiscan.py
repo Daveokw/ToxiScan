@@ -5,25 +5,24 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from transformers import AutoModelForSequenceClassification
 import re
 import time
-import tempfile
 
 # Load tokenizer and model
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(
-  model_name,
-  low_cpu_mem_usage=False,    
-  device_map=None             
+    model_name,
+    low_cpu_mem_usage=False,
+    device_map=None
 )
 model.to("cpu")
 model.eval()
 
-
-labels = ['toxicity', 'severe_toxicity', 'obscene', 'identity_attack', 'insult', 'threat']
+labels = [
+    'toxicity', 'severe_toxicity', 'obscene',
+    'identity_attack', 'insult', 'threat'
+]
 label_map = {
     'toxicity': 'Toxic',
     'severe_toxicity': 'Highly Toxic',
@@ -34,54 +33,87 @@ label_map = {
 }
 
 def scrape_text_from_url(url):
+    # 1) configure headless Selenium to use the APT-installed Chromium binary
     options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    service = Service(ChromeDriverManager().install())
+    options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
+    options.binary_location = "/usr/bin/chromium"
+
+    # 2) point Selenium at the APT-installed driver
+    service = Service(executable_path="/usr/bin/chromium-driver")
+
     driver = webdriver.Chrome(service=service, options=options)
     driver.get(url)
-    time.sleep(5)
-    last_h = driver.execute_script('return document.body.scrollHeight')
+
+    # scroll to load lazy content
+    time.sleep(2)
+    last_h = driver.execute_script("return document.body.scrollHeight")
     while True:
-        driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-        time.sleep(2)
-        new_h = driver.execute_script('return document.body.scrollHeight')
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1)
+        new_h = driver.execute_script("return document.body.scrollHeight")
         if new_h == last_h:
             break
         last_h = new_h
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+    soup = BeautifulSoup(driver.page_source, "html.parser")
     driver.quit()
-    for tag in soup(['script', 'style', 'nav', 'footer', 'aside', 'header']):
+
+    # remove unwanted tags
+    for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
         tag.decompose()
-    blocks = soup.find_all(['article', 'p', 'li', 'blockquote', 'div'])
-    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 30]
+
+    blocks = soup.find_all(["article", "p", "li", "blockquote", "div"])
+    texts = [
+        b.get_text(strip=True)
+        for b in blocks
+        if len(b.get_text(strip=True)) > 30
+    ]
+    # dedupe and limit
     return list(dict.fromkeys(texts))[:50]
 
 def batch_classify_texts(texts, threshold_text=0.5, threshold_word=0.3):
     results = []
+    # build word list
     word_set = set()
     for txt in texts:
-        word_set |= set(re.findall(r'\b\w{3,}\b', txt.lower()))
-
+        word_set |= set(re.findall(r"\b\w{3,}\b", txt.lower()))
     word_list = list(word_set)
-    tok_word_inputs = tokenizer(word_list, return_tensors='pt', padding=True, truncation=True, max_length=16)
+
+    # classify individual words
+    tok_word_inputs = tokenizer(
+        word_list,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=16
+    )
     with torch.no_grad():
         tok_outputs = model(**tok_word_inputs)
     word_scores = torch.sigmoid(tok_outputs.logits).cpu().numpy()
     word_map = {
-        word_list[i]: [labels[j] for j, s in enumerate(row) if s >= threshold_word]
+        word_list[i]: [
+            labels[j] for j, s in enumerate(row) if s >= threshold_word
+        ]
         for i, row in enumerate(word_scores)
         if any(s >= threshold_word for s in row)
     }
 
+    # classify full blocks
     for txt in texts:
-        inputs = tokenizer(txt, return_tensors='pt', truncation=True, padding=True, max_length=512)
+        inputs = tokenizer(
+            txt,
+            return_tensors="pt",
+            truncation=True,
+            padding=True,
+            max_length=512
+        )
         with torch.no_grad():
             outputs = model(**inputs)
         scores = torch.sigmoid(outputs.logits)[0].cpu().numpy()
         categories = [labels[i] for i, s in enumerate(scores) if s >= threshold_text]
         if categories:
-            toks = set(re.findall(r'\b\w{3,}\b', txt.lower()))
+            toks = set(re.findall(r"\b\w{3,}\b", txt.lower()))
             flagged_words = {w: word_map[w] for w in toks if w in word_map}
             results.append((txt, categories, flagged_words))
     return results
@@ -92,26 +124,29 @@ st.title("🛡️ ToxiScan")
 st.markdown("Enter a URL, paste some text, or upload a `.txt` file to detect offensive content.")
 
 input_option = st.radio("Select input type:", ("URL", "Text", "File"))
-user_input = ""
+user_input = []
 
 if input_option == "URL":
     url = st.text_input("Enter URL:")
     if url:
-        st.info("Scraping text from URL...")
+        st.info("Scraping text from URL…")
         try:
             user_input = scrape_text_from_url(url)
         except Exception as e:
             st.error(f"Error scraping URL: {e}")
 
 elif input_option == "Text":
-    user_input = st.text_area("Enter text:", height=200)
-    user_input = [user_input] if user_input else []
+    txt = st.text_area("Enter text:", height=200)
+    if txt:
+        user_input = [txt]
 
-else:
+else:  # File
     uploaded_file = st.file_uploader("Upload .txt file:", type=["txt"])
     if uploaded_file:
-        stringio = uploaded_file.read().decode("utf-8")
-        user_input = [line for line in stringio.strip().split("\n") if len(line.strip()) > 30]
+        content = uploaded_file.read().decode("utf-8")
+        user_input = [
+            line for line in content.splitlines() if len(line.strip()) > 30
+        ]
 
 if st.button("Analyze"):
     if not user_input:
