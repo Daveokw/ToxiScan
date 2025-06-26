@@ -54,7 +54,8 @@ def scrape_text_from_url(url: str) -> list[str]:
 
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(model_name, device_map="cpu")
+model = AutoModelForSequenceClassification.from_pretrained(model_name)
+model = model.cpu() 
 model.eval()
 device = torch.device("cpu")
 
