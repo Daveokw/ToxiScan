@@ -11,7 +11,6 @@ import os
 import re
 import time
 
-# ─── Helper to get a Chrome webdriver ────────────────────────────────────────────
 def get_webdriver():
     opts = Options()
     opts.add_argument("--headless")
@@ -19,31 +18,22 @@ def get_webdriver():
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
 
-    # 1) If chromedriver exists on PATH (e.g. apt-installed), use it
     sys_drv = shutil.which("chromedriver")
     if sys_drv:
-        # On Cloud you'll also have /usr/bin/chromium; locally you can override if needed
         if os.path.exists("/usr/bin/chromium"):
             opts.binary_location = "/usr/bin/chromium"
         service = Service(executable_path=sys_drv)
         return webdriver.Chrome(service=service, options=opts)
 
-    # 2) Otherwise fall back to WebDriverManager (auto-download matching driver)
     path = ChromeDriverManager().install()
     service = Service(executable_path=path)
-
-    # If your Chrome binary is nonstandard, you can override here:
-    # opts.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-
+    
     return webdriver.Chrome(service=service, options=opts)
 
-
-# ─── Scrape text from a URL ─────────────────────────────────────────────────────
 def scrape_text_from_url(url: str) -> list[str]:
     driver = get_webdriver()
     driver.get(url)
 
-    # scroll to bottom to load lazy content
     time.sleep(1)
     last_h = driver.execute_script("return document.body.scrollHeight")
     while True:
@@ -58,17 +48,13 @@ def scrape_text_from_url(url: str) -> list[str]:
     driver.quit()
 
     soup = BeautifulSoup(html, "html.parser")
-    # remove boilerplate tags
     for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
         tag.decompose()
 
     blocks = soup.find_all(["article", "p", "li", "blockquote", "div"])
     texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 30]
-    # dedupe and limit
     return list(dict.fromkeys(texts))[:50]
 
-
-# ─── Batch classification with ToxicBERT ────────────────────────────────────────
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(model_name)
@@ -99,7 +85,6 @@ def batch_classify_texts(
         word_set |= set(re.findall(r"\b\w{3,}\b", txt.lower()))
     word_list = list(word_set)
 
-    # classify words
     tok_w = tokenizer(word_list, return_tensors="pt", padding=True, truncation=True, max_length=16)
     with torch.no_grad():
         logits_w = model(**tok_w).logits
@@ -110,7 +95,6 @@ def batch_classify_texts(
         if any(s >= threshold_word for s in row)
     }
 
-    # classify full texts
     for txt in texts:
         tok_t = tokenizer(txt, return_tensors="pt", truncation=True, padding=True, max_length=512)
         with torch.no_grad():
@@ -124,8 +108,6 @@ def batch_classify_texts(
 
     return results
 
-
-# ─── Streamlit UI ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
 st.title("🛡️ ToxiScan")
 st.markdown("Enter a URL, paste text, or upload a `.txt` file to detect toxicity.")
@@ -147,7 +129,7 @@ elif mode == "Text":
     if txt:
         user_input = [txt]
 
-else:  # File
+else: 
     f = st.file_uploader("Upload a `.txt` file:", type=["txt"])
     if f:
         lines = f.read().decode("utf-8").splitlines()
