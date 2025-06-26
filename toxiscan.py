@@ -5,17 +5,12 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-import re
-import time
+import re, time, shutil
 
-# Load tokenizer and model
+# ─── Load tokenizer & model ─────────────────────────────────────────────────────
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(
-    model_name,
-    low_cpu_mem_usage=False,
-    device_map=None
-)
+model = AutoModelForSequenceClassification.from_pretrained(model_name)
 model.to("cpu")
 model.eval()
 
@@ -32,21 +27,22 @@ label_map = {
     'threat': 'Threat'
 }
 
-def scrape_text_from_url(url):
-    # 1) configure headless Selenium to use the APT-installed Chromium binary
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
-    options.binary_location = "/usr/bin/chromium"
+# ─── Scraper ────────────────────────────────────────────────────────────────────
+def scrape_text_from_url(url: str) -> list[str]:
+    opts = Options()
+    opts.add_argument("--headless")
+    opts.add_argument("--disable-gpu")
+    opts.binary_location = "/usr/bin/chromium"               # APT-installed Chromium
 
-    # 2) point Selenium at the APT-installed driver
-    service = Service(executable_path="/usr/bin/chromium-driver")
+    # find the APT-installed chromedriver on $PATH
+    driver_path = shutil.which("chromedriver")
+    service = Service(executable_path=driver_path)
 
-    driver = webdriver.Chrome(service=service, options=options)
+    driver = webdriver.Chrome(service=service, options=opts)
     driver.get(url)
 
-    # scroll to load lazy content
-    time.sleep(2)
+    # scroll to lazy-load
+    time.sleep(1)
     last_h = driver.execute_script("return document.body.scrollHeight")
     while True:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -69,24 +65,24 @@ def scrape_text_from_url(url):
         for b in blocks
         if len(b.get_text(strip=True)) > 30
     ]
-    # dedupe and limit
     return list(dict.fromkeys(texts))[:50]
 
-def batch_classify_texts(texts, threshold_text=0.5, threshold_word=0.3):
-    results = []
-    # build word list
-    word_set = set()
+# ─── Classifier ────────────────────────────────────────────────────────────────
+def batch_classify_texts(
+    texts: list[str],
+    threshold_text: float = 0.5,
+    threshold_word: float = 0.3
+) -> list[tuple[str, list[str], dict[str, list[str]]]]:
+    results, word_set = [], set()
     for txt in texts:
         word_set |= set(re.findall(r"\b\w{3,}\b", txt.lower()))
     word_list = list(word_set)
 
-    # classify individual words
+    # classify words
     tok_word_inputs = tokenizer(
         word_list,
         return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=16
+        padding=True, truncation=True, max_length=16
     )
     with torch.no_grad():
         tok_outputs = model(**tok_word_inputs)
@@ -99,67 +95,61 @@ def batch_classify_texts(texts, threshold_text=0.5, threshold_word=0.3):
         if any(s >= threshold_word for s in row)
     }
 
-    # classify full blocks
+    # classify full texts
     for txt in texts:
         inputs = tokenizer(
-            txt,
-            return_tensors="pt",
-            truncation=True,
-            padding=True,
-            max_length=512
+            txt, return_tensors="pt",
+            truncation=True, padding=True, max_length=512
         )
         with torch.no_grad():
             outputs = model(**inputs)
         scores = torch.sigmoid(outputs.logits)[0].cpu().numpy()
-        categories = [labels[i] for i, s in enumerate(scores) if s >= threshold_text]
-        if categories:
+        cats = [labels[i] for i, s in enumerate(scores) if s >= threshold_text]
+        if cats:
             toks = set(re.findall(r"\b\w{3,}\b", txt.lower()))
-            flagged_words = {w: word_map[w] for w in toks if w in word_map}
-            results.append((txt, categories, flagged_words))
+            flagged = {w: word_map[w] for w in toks if w in word_map}
+            results.append((txt, cats, flagged))
     return results
 
-# Streamlit App
+# ─── Streamlit UI ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
 st.title("🛡️ ToxiScan")
-st.markdown("Enter a URL, paste some text, or upload a `.txt` file to detect offensive content.")
+st.markdown("Enter a URL, paste text, or upload a `.txt` to detect toxicity.")
 
-input_option = st.radio("Select input type:", ("URL", "Text", "File"))
-user_input = []
+opt = st.radio("Input type:", ("URL", "Text", "File"))
+user_input: list[str] = []
 
-if input_option == "URL":
+if opt == "URL":
     url = st.text_input("Enter URL:")
     if url:
-        st.info("Scraping text from URL…")
+        st.info("Scraping text…")
         try:
             user_input = scrape_text_from_url(url)
         except Exception as e:
             st.error(f"Error scraping URL: {e}")
 
-elif input_option == "Text":
-    txt = st.text_area("Enter text:", height=200)
-    if txt:
-        user_input = [txt]
+elif opt == "Text":
+    txt = st.text_area("Paste text:", height=200)
+    user_input = [txt] if txt else []
 
 else:  # File
-    uploaded_file = st.file_uploader("Upload .txt file:", type=["txt"])
-    if uploaded_file:
-        content = uploaded_file.read().decode("utf-8")
-        user_input = [
-            line for line in content.splitlines() if len(line.strip()) > 30
-        ]
+    f = st.file_uploader("Upload `.txt`:", type=["txt"])
+    if f:
+        content = f.read().decode("utf-8")
+        user_input = [line for line in content.splitlines() if len(line) > 30]
 
 if st.button("Analyze"):
     if not user_input:
-        st.warning("No content provided for analysis.")
+        st.warning("No content provided.")
     else:
-        results = batch_classify_texts(user_input)
-        if not results:
+        out = batch_classify_texts(user_input)
+        if not out:
             st.info("No toxic content detected.")
         else:
-            for idx, (text, cats, flagged_words) in enumerate(results, 1):
-                with st.expander(f"{idx}. {', '.join(label_map[c] for c in cats)}"):
-                    st.write(text)
-                    if flagged_words:
+            for i, (blk, cats, flagged) in enumerate(out, 1):
+                with st.expander(f"{i}. {', '.join(label_map[c] for c in cats)}"):
+                    st.write(blk)
+                    if flagged:
                         st.markdown("**Flagged Words:**")
-                        for word, tags in flagged_words.items():
-                            st.markdown(f"- `{word}`: {', '.join(label_map[t] for t in tags)}")
+                        for w, tags in flagged.items():
+                            st.markdown(f"- `{w}`: {', '.join(label_map[t] for t in tags)}")
