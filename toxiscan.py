@@ -17,9 +17,13 @@ from webdriver_manager.chrome import ChromeDriverManager
 # Load model
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
+model = AutoModelForSequenceClassification.from_pretrained(
+    model_name,
+    torch_dtype=torch.float32, 
+    device_map=None            
+)
+model = model.to("cpu")
 model.eval()
-device = torch.device("cpu")
 
 labels = [
     'toxicity', 'severe_toxicity', 'obscene',
