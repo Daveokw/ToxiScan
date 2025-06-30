@@ -2,6 +2,7 @@ import os
 import re
 import time
 import shutil
+import io
 import streamlit as st
 import docx
 import fitz 
@@ -13,8 +14,28 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-os.environ["PATH"] += os.pathsep + "/usr/bin"
+#Load Model
+model_name = "unitary/toxic-bert"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSequenceClassification.from_pretrained(model_name)
+model = model.cpu()
+model.eval()
+device = torch.device("cpu")
 
+labels = [
+    'toxicity', 'severe_toxicity', 'obscene',
+    'identity_attack', 'insult', 'threat'
+]
+label_map = {
+    'toxicity': 'Toxic',
+    'severe_toxicity': 'Highly Toxic',
+    'obscene': 'Obscene',
+    'identity_attack': 'Hate',
+    'insult': 'Insult',
+    'threat': 'Threat'
+}
+
+#Web Scraping 
 def get_webdriver():
     opts = Options()
     opts.add_argument("--headless")
@@ -38,7 +59,7 @@ def scrape_text_from_url(url: str) -> list[str]:
     driver.get(url)
 
     time.sleep(2)
-    scroll_limit = 5 
+    scroll_limit = 5
     for _ in range(scroll_limit):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(1)
@@ -54,26 +75,7 @@ def scrape_text_from_url(url: str) -> list[str]:
     texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
     return list(dict.fromkeys(texts))[:50]
 
-model_name = "unitary/toxic-bert"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
-model = model.cpu() 
-model.eval()
-device = torch.device("cpu")
-
-labels = [
-    'toxicity', 'severe_toxicity', 'obscene',
-    'identity_attack', 'insult', 'threat'
-]
-label_map = {
-    'toxicity': 'Toxic',
-    'severe_toxicity': 'Highly Toxic',
-    'obscene': 'Obscene',
-    'identity_attack': 'Hate',
-    'insult': 'Insult',
-    'threat': 'Threat'
-}
-
+#Toxicity Detection
 def batch_classify_texts(
     texts: list[str],
     threshold_text: float = 0.5,
@@ -108,6 +110,7 @@ def batch_classify_texts(
 
     return results
 
+#Streamlit App
 st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
 st.title("🛡️ ToxiScan")
 st.markdown("Enter a URL, paste text, or upload a (`.txt`, `.docx`, `.pdf`) file to detect toxicity.")
@@ -121,17 +124,15 @@ if mode == "URL":
         st.info("Scraping text…")
         try:
             user_input = scrape_text_from_url(url)
+            st.success(f"Scraped {len(user_input)} text blocks.")
         except Exception as e:
             st.error(f"Error scraping URL: {e}")
 
 elif mode == "Text":
     txt = st.text_area("Paste text here:", height=200)
-    if txt.strip():
+    if txt:
         user_input = [p for p in txt.split("\n\n") if p.strip()]
-        if not user_input:
-            st.warning("No usable paragraphs found in the input.")
-        else:
-            st.success(f"Loaded {len(user_input)} text blocks from pasted text.")
+        st.success(f"Loaded {len(user_input)} text blocks from pasted text.")
 
 elif mode == "File":
     f = st.file_uploader("Upload a `.txt`, `.pdf`, or `.docx` file:", type=["txt", "pdf", "docx"])
@@ -139,59 +140,53 @@ elif mode == "File":
         file_type = f.type
 
         if file_type == "text/plain":
-            try:
-                text = f.read().decode("utf-8")
-                st.text_area("📄 Extracted Text Preview", text, height=200)
-                user_input = [p for p in text.split("\n\n") if p.strip()]
-                if not user_input:
-                    st.warning("No usable paragraphs found in the text file.")
-                else:
-                    st.success(f"Loaded {len(user_input)} text blocks from TXT.")
-            except Exception as e:
-                st.error(f"Failed to read TXT file: {e}")
+            lines = f.read().decode("utf-8").splitlines()
+            text = "\n".join(lines)
+            user_input = [p for p in text.split("\n\n") if p.strip()]
+            st.success(f"Loaded {len(user_input)} blocks from .txt file.")
 
         elif file_type == "application/pdf":
             try:
-                with fitz.open(stream=f.read(), filetype="pdf") as pdf:
-                    text = "\n".join(page.get_text() for page in pdf)
-                st.text_area("📄 Extracted Text Preview", text, height=200)
+                pdf = fitz.open(stream=f.read(), filetype="pdf")
+                text = "\n".join(page.get_text() for page in pdf)
                 user_input = [p for p in text.split("\n\n") if p.strip()]
-                if not user_input:
-                    st.warning("No usable paragraphs found in the PDF.")
-                else:
-                    st.success(f"Loaded {len(user_input)} text blocks from PDF.")
+                st.success(f"Loaded {len(user_input)} blocks from PDF.")
             except Exception as e:
-                st.error(f"Failed to read PDF file: {e}")
+                st.error(f"Failed to read PDF: {e}")
 
         elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
             try:
-                import io
                 file_bytes = f.read()
                 doc = docx.Document(io.BytesIO(file_bytes))
-                text = "\n".join(para.text for para in doc.paragraphs if para.text.strip())
+                text = "\n".join(para.text for para in doc.paragraphs)
                 st.text_area("📝 Extracted Text Preview", text, height=200)
-                user_input = [p for p in text.split("\n\n") if p.strip()]
+                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 10]
                 if not user_input:
-                    st.warning("No usable paragraphs found in the DOCX file.")
+                    st.warning("No long enough paragraphs found in the .docx file.")
                 else:
                     st.success(f"Loaded {len(user_input)} text blocks from DOCX.")
             except Exception as e:
                 st.error(f"Failed to read Word document: {e}")
 
-
+#Analyze Button
 if st.button("Analyze"):
+    st.write(f"DEBUG: {len(user_input)} text blocks ready for analysis.")
     if not user_input:
         st.warning("No content provided.")
     else:
-        results = batch_classify_texts(user_input)
-        if not results:
-            st.info("No toxic content detected.")
-        else:
-            for i, (blk, cats, flagged) in enumerate(results, start=1):
-                title = ", ".join(label_map[c] for c in cats)
-                with st.expander(f"{i}. {title}"):
-                    st.write(blk)
-                    if flagged:
-                        st.markdown("**Flagged Words:**")
-                        for w, tags in flagged.items():
-                            st.markdown(f"- `{w}`: {', '.join(label_map[t] for t in tags)}")
+        try:
+            results = batch_classify_texts(user_input)
+            st.success("Analysis complete!")
+            if not results:
+                st.info("No toxic content detected.")
+            else:
+                for i, (blk, cats, flagged) in enumerate(results, start=1):
+                    title = ", ".join(label_map[c] for c in cats)
+                    with st.expander(f"{i}. {title}"):
+                        st.write(blk)
+                        if flagged:
+                            st.markdown("**Flagged Words:**")
+                            for w, tags in flagged.items():
+                                st.markdown(f"- `{w}`: {', '.join(label_map[t] for t in tags)}")
+        except Exception as e:
+            st.error(f"Analysis failed: {e}")
