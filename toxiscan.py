@@ -146,13 +146,18 @@ elif mode == "File":
             except Exception as e:
                 st.error(f"Failed to read PDF: {e}")
 
-        elif file_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
+        elif f.name.endswith(".docx"):
             try:
                 doc = docx.Document(f)
                 text = "\n".join([para.text for para in doc.paragraphs])
-                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 30]
+                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 10]
+                if not user_input:
+                    st.warning("No long enough paragraphs found in the .docx file.")
+                else:
+                    st.success(f"Loaded {len(user_input)} text blocks from DOCX.")
             except Exception as e:
                 st.error(f"Failed to read Word document: {e}")
+
 
 if st.button("Analyze"):
     if not user_input:
