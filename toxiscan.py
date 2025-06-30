@@ -15,12 +15,10 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 #Load Model
-model_name = "unitary/toxic-bert"
+model_name = "martin-ha/toxic-comment-model"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(model_name)
-model = model.cpu()
 model.eval()
-device = torch.device("cpu")
 
 labels = [
     'toxicity', 'severe_toxicity', 'obscene',
