@@ -13,6 +13,9 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+from huggingface_hub import login
+
+login(st.secrets["HF_TOKEN"])
 
 # DEVICE SETUP
 device = torch.device("cpu")
