@@ -51,7 +51,7 @@ def scrape_text_from_url(url: str) -> list[str]:
         tag.decompose()
 
     blocks = soup.find_all(["article", "p", "li", "blockquote", "div"])
-    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 10]
+    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
     return list(dict.fromkeys(texts))[:50]
 
 model_name = "unitary/toxic-bert"
@@ -126,8 +126,12 @@ if mode == "URL":
 
 elif mode == "Text":
     txt = st.text_area("Paste text here:", height=200)
-    if txt:
-        user_input = [txt]
+    if txt.strip():
+        user_input = [p for p in txt.split("\n\n") if p.strip()]
+        if not user_input:
+            st.warning("No usable paragraphs found in the input.")
+        else:
+            st.success(f"Loaded {len(user_input)} text blocks from pasted text.")
 
 elif mode == "File":
     f = st.file_uploader("Upload a `.txt`, `.pdf`, or `.docx` file:", type=["txt", "pdf", "docx"])
@@ -135,24 +139,40 @@ elif mode == "File":
         file_type = f.type
 
         if file_type == "text/plain":
-            lines = f.read().decode("utf-8").splitlines()
-            user_input = [L for L in lines if len(L.strip()) > 10]
+            try:
+                text = f.read().decode("utf-8")
+                st.text_area("📄 Extracted Text Preview", text, height=200)
+                user_input = [p for p in text.split("\n\n") if p.strip()]
+                if not user_input:
+                    st.warning("No usable paragraphs found in the text file.")
+                else:
+                    st.success(f"Loaded {len(user_input)} text blocks from TXT.")
+            except Exception as e:
+                st.error(f"Failed to read TXT file: {e}")
 
         elif file_type == "application/pdf":
             try:
-                pdf = fitz.open(stream=f.read(), filetype="pdf")
-                text = "\n".join(page.get_text() for page in pdf)
-                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 10]
-            except Exception as e:
-                st.error(f"Failed to read PDF: {e}")
-
-        elif f.name.endswith(".docx"):
-            try:
-                doc = docx.Document(f)
-                text = "\n".join([para.text for para in doc.paragraphs])
-                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 10]
+                with fitz.open(stream=f.read(), filetype="pdf") as pdf:
+                    text = "\n".join(page.get_text() for page in pdf)
+                st.text_area("📄 Extracted Text Preview", text, height=200)
+                user_input = [p for p in text.split("\n\n") if p.strip()]
                 if not user_input:
-                    st.warning("No long enough paragraphs found in the .docx file.")
+                    st.warning("No usable paragraphs found in the PDF.")
+                else:
+                    st.success(f"Loaded {len(user_input)} text blocks from PDF.")
+            except Exception as e:
+                st.error(f"Failed to read PDF file: {e}")
+
+        elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            try:
+                import io
+                file_bytes = f.read()
+                doc = docx.Document(io.BytesIO(file_bytes))
+                text = "\n".join(para.text for para in doc.paragraphs if para.text.strip())
+                st.text_area("📝 Extracted Text Preview", text, height=200)
+                user_input = [p for p in text.split("\n\n") if p.strip()]
+                if not user_input:
+                    st.warning("No usable paragraphs found in the DOCX file.")
                 else:
                     st.success(f"Loaded {len(user_input)} text blocks from DOCX.")
             except Exception as e:
