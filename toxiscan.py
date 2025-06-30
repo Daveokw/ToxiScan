@@ -110,7 +110,7 @@ def batch_classify_texts(
 
 st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
 st.title("🛡️ ToxiScan")
-st.markdown("Enter a URL, paste text, or upload a `.txt` file to detect toxicity.")
+st.markdown("Enter a URL, paste text, or upload a (`.txt`, `.docx`, `.pdf`) file to detect toxicity.")
 
 mode = st.radio("Input type:", ("URL", "Text", "File"))
 user_input: list[str] = []
