@@ -52,7 +52,7 @@ def scrape_text_from_url(url):
         tag.decompose()
 
     blocks = soup.find_all(['article', 'p', 'li', 'blockquote', 'div'])
-    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 30]
+    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
     return list(dict.fromkeys(texts))[:50]
 
 def read_file_text(filepath):
@@ -60,17 +60,18 @@ def read_file_text(filepath):
     try:
         if ext == ".txt":
             with open(filepath, "r", encoding="utf-8") as f:
-                return [line.strip() for line in f if len(line.strip()) > 30]
+                text = f.read()
+                return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
 
         elif ext == ".pdf":
             pdf = fitz.open(filepath)
             text = "\n".join([page.get_text() for page in pdf])
-            return [p.strip() for p in text.split("\n\n") if len(p.strip()) > 30]
+            return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
 
         elif ext == ".docx":
             doc = docx.Document(filepath)
-            text = "\n".join(para.text for para in doc.paragraphs)
-            return [p.strip() for p in text.split("\n\n") if len(p.strip()) > 30]
+            text = "\n".join([para.text for para in doc.paragraphs])
+            return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
 
     except Exception as e:
         messagebox.showerror("File Error", f"Failed to read {filepath}:\n{e}")
@@ -109,7 +110,7 @@ def analyze_input_text(inp):
     if re.match(r'https?://', inp):
         return scrape_text_from_url(inp)
     else:
-        return [inp] if len(inp.strip()) > 30 else []
+        return [inp] if inp.strip() else []
 
 def analyze_file():
     path = filedialog.askopenfilename(filetypes=[
@@ -160,7 +161,7 @@ def show_results(results):
 def build_gui():
     global root, input_entry, results_display
     root = tk.Tk()
-    root.title("🛡️ Hate Speech & Toxicity Detector")
+    root.title("\U0001F6E1\ufe0f Toxiscan")
     root.geometry("900x750")
     root.config(bg="#f0f0f0")
 
