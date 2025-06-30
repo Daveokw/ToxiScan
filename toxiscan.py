@@ -5,7 +5,7 @@ import shutil
 import io
 import streamlit as st
 import docx
-import fitz 
+import fitz
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from bs4 import BeautifulSoup
@@ -14,7 +14,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-#Load Model
+# Load model
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(model_name)
@@ -35,7 +35,7 @@ label_map = {
     'threat': 'Threat'
 }
 
-#Web Scraping 
+# Web scraping
 def get_webdriver():
     opts = Options()
     opts.add_argument("--headless")
@@ -57,13 +57,10 @@ def get_webdriver():
 def scrape_text_from_url(url: str) -> list[str]:
     driver = get_webdriver()
     driver.get(url)
-
     time.sleep(2)
-    scroll_limit = 5
-    for _ in range(scroll_limit):
+    for _ in range(5):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(1)
-
     html = driver.page_source
     driver.quit()
 
@@ -75,7 +72,7 @@ def scrape_text_from_url(url: str) -> list[str]:
     texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
     return list(dict.fromkeys(texts))[:50]
 
-#Toxicity Detection
+# Classification
 def batch_classify_texts(
     texts: list[str],
     threshold_text: float = 0.5,
@@ -110,7 +107,7 @@ def batch_classify_texts(
 
     return results
 
-#Streamlit App
+# Streamlit interface
 st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
 st.title("🛡️ ToxiScan")
 st.markdown("Enter a URL, paste text, or upload a (`.txt`, `.docx`, `.pdf`) file to detect toxicity.")
@@ -138,13 +135,11 @@ elif mode == "File":
     f = st.file_uploader("Upload a `.txt`, `.pdf`, or `.docx` file:", type=["txt", "pdf", "docx"])
     if f:
         file_type = f.type
-
         if file_type == "text/plain":
             lines = f.read().decode("utf-8").splitlines()
             text = "\n".join(lines)
             user_input = [p for p in text.split("\n\n") if p.strip()]
             st.success(f"Loaded {len(user_input)} blocks from .txt file.")
-
         elif file_type == "application/pdf":
             try:
                 pdf = fitz.open(stream=f.read(), filetype="pdf")
@@ -153,7 +148,6 @@ elif mode == "File":
                 st.success(f"Loaded {len(user_input)} blocks from PDF.")
             except Exception as e:
                 st.error(f"Failed to read PDF: {e}")
-
         elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
             try:
                 file_bytes = f.read()
@@ -168,14 +162,19 @@ elif mode == "File":
             except Exception as e:
                 st.error(f"Failed to read Word document: {e}")
 
-#Analyze Button
+# Sensitivity Controls
+st.markdown("### ⚙️ Adjust Sensitivity")
+threshold_text = st.slider("Text Sensitivity Threshold", 0.1, 1.0, 0.5, 0.05)
+threshold_word = st.slider("Word Sensitivity Threshold", 0.1, 1.0, 0.3, 0.05)
+
+# Analyze Button
 if st.button("Analyze"):
     st.write(f"DEBUG: {len(user_input)} text blocks ready for analysis.")
     if not user_input:
         st.warning("No content provided.")
     else:
         try:
-            results = batch_classify_texts(user_input)
+            results = batch_classify_texts(user_input, threshold_text, threshold_word)
             st.success("Analysis complete!")
             if not results:
                 st.info("No toxic content detected.")
