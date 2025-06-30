@@ -3,6 +3,8 @@ import re
 import time
 import shutil
 import streamlit as st
+import docx
+import fitz 
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from bs4 import BeautifulSoup
@@ -127,11 +129,30 @@ elif mode == "Text":
     if txt:
         user_input = [txt]
 
-else: 
-    f = st.file_uploader("Upload a `.txt` file:", type=["txt"])
+elif mode == "File":
+    f = st.file_uploader("Upload a `.txt`, `.pdf`, or `.docx` file:", type=["txt", "pdf", "docx"])
     if f:
-        lines = f.read().decode("utf-8").splitlines()
-        user_input = [L for L in lines if len(L.strip()) > 30]
+        file_type = f.type
+
+        if file_type == "text/plain":
+            lines = f.read().decode("utf-8").splitlines()
+            user_input = [L for L in lines if len(L.strip()) > 30]
+
+        elif file_type == "application/pdf":
+            try:
+                pdf = fitz.open(stream=f.read(), filetype="pdf")
+                text = "\n".join(page.get_text() for page in pdf)
+                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 30]
+            except Exception as e:
+                st.error(f"Failed to read PDF: {e}")
+
+        elif file_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
+            try:
+                doc = docx.Document(f)
+                text = "\n".join([para.text for para in doc.paragraphs])
+                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 30]
+            except Exception as e:
+                st.error(f"Failed to read Word document: {e}")
 
 if st.button("Analyze"):
     if not user_input:
