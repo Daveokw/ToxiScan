@@ -21,7 +21,6 @@ device = torch.device("cpu")
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(model_name)
-model.to(device)
 model.eval()
 
 labels = [
