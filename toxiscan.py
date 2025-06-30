@@ -51,7 +51,7 @@ def scrape_text_from_url(url: str) -> list[str]:
         tag.decompose()
 
     blocks = soup.find_all(["article", "p", "li", "blockquote", "div"])
-    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 30]
+    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 10]
     return list(dict.fromkeys(texts))[:50]
 
 model_name = "unitary/toxic-bert"
@@ -136,13 +136,13 @@ elif mode == "File":
 
         if file_type == "text/plain":
             lines = f.read().decode("utf-8").splitlines()
-            user_input = [L for L in lines if len(L.strip()) > 30]
+            user_input = [L for L in lines if len(L.strip()) > 10]
 
         elif file_type == "application/pdf":
             try:
                 pdf = fitz.open(stream=f.read(), filetype="pdf")
                 text = "\n".join(page.get_text() for page in pdf)
-                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 30]
+                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 10]
             except Exception as e:
                 st.error(f"Failed to read PDF: {e}")
 
