@@ -3,6 +3,7 @@ import re
 import time
 import shutil
 import io
+import sys
 import streamlit as st
 import docx
 import fitz
@@ -15,7 +16,12 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from huggingface_hub import login
 
-login(st.secrets["HF_TOKEN"])
+# Optional Hugging Face login from Streamlit secrets
+hf_token = st.secrets.get("HF_TOKEN")
+if hf_token:
+    login(hf_token)
+else:
+    st.warning("No Hugging Face token found in secrets. Proceeding without login.")
 
 # DEVICE SETUP
 device = torch.device("cpu")
@@ -25,11 +31,11 @@ model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(
     model_name,
-    torch_dtype=torch.float32,
-    device_map=None 
-)
+    torch_dtype=torch.float32
+).to(device)
 model.eval()
 
+# LABELS
 labels = [
     'toxicity', 'severe_toxicity', 'obscene',
     'identity_attack', 'insult', 'threat'
@@ -43,7 +49,7 @@ label_map = {
     'threat': 'Threat'
 }
 
-# SCRAPE FROM URL
+# SCRAPE TEXT FROM URL
 def get_webdriver():
     opts = Options()
     opts.add_argument("--headless")
@@ -80,7 +86,7 @@ def scrape_text_from_url(url: str) -> list[str]:
     texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
     return list(dict.fromkeys(texts))[:50]
 
-# TEXT CLASSIFICATION
+# TOXICITY ANALYSIS
 def batch_classify_texts(
     texts: list[str],
     threshold_text: float = 0.5,
@@ -93,7 +99,7 @@ def batch_classify_texts(
     word_list = list(word_set)
 
     if word_list:
-        tok_w = tokenizer(word_list, return_tensors="pt", padding=True, truncation=True, max_length=16).to(device)
+        tok_w = tokenizer(word_list, return_tensors="pt", padding=True, truncation=True, max_length=16)
         with torch.no_grad():
             logits_w = model(**tok_w).logits
         scores_w = torch.sigmoid(logits_w).cpu().numpy()
@@ -106,7 +112,7 @@ def batch_classify_texts(
         word_map = {}
 
     for txt in texts:
-        tok_t = tokenizer(txt, return_tensors="pt", truncation=True, padding=True, max_length=512).to(device)
+        tok_t = tokenizer(txt, return_tensors="pt", truncation=True, padding=True, max_length=512)
         with torch.no_grad():
             logits_t = model(**tok_t).logits
         scores_t = torch.sigmoid(logits_t)[0].cpu().numpy()
@@ -118,10 +124,10 @@ def batch_classify_texts(
 
     return results
 
-# STREAMLIT APP
+# STREAMLIT UI
 st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
 st.title("🛡️ ToxiScan")
-st.markdown("Enter a URL, paste text, or upload a (`.txt`, `.docx`, `.pdf`) file to detect toxicity.")
+st.markdown("Enter a URL, paste text, or upload a `.txt`, `.docx`, or `.pdf` file to detect toxicity.")
 
 # Sensitivity sliders
 threshold_text = st.slider("📊 Text Sensitivity Threshold", 0.0, 1.0, 0.5, 0.05)
@@ -130,6 +136,7 @@ threshold_word = st.slider("📉 Word Sensitivity Threshold", 0.0, 1.0, 0.3, 0.0
 mode = st.radio("Input type:", ("URL", "Text", "File"))
 user_input: list[str] = []
 
+# URL INPUT
 if mode == "URL":
     url = st.text_input("Enter URL:")
     if url:
@@ -140,29 +147,31 @@ if mode == "URL":
         except Exception as e:
             st.error(f"Error scraping URL: {e}")
 
+# TEXT INPUT
 elif mode == "Text":
     txt = st.text_area("Paste text here:", height=200)
     if txt:
         user_input = [p for p in txt.split("\n\n") if p.strip()]
         st.success(f"Loaded {len(user_input)} text blocks from pasted text.")
 
+# FILE INPUT
 elif mode == "File":
     f = st.file_uploader("Upload a `.txt`, `.pdf`, or `.docx` file:", type=["txt", "pdf", "docx"])
     if f:
-        file_type = f.type
+        filename = f.name.lower()
         try:
-            if file_type == "text/plain":
+            if filename.endswith(".txt"):
                 text = f.read().decode("utf-8")
                 user_input = [p for p in text.split("\n\n") if p.strip()]
                 st.success(f"Loaded {len(user_input)} blocks from .txt file.")
 
-            elif file_type == "application/pdf":
+            elif filename.endswith(".pdf"):
                 pdf = fitz.open(stream=f.read(), filetype="pdf")
                 text = "\n".join(page.get_text() for page in pdf)
                 user_input = [p for p in text.split("\n\n") if p.strip()]
                 st.success(f"Loaded {len(user_input)} blocks from PDF.")
 
-            elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            elif filename.endswith(".docx"):
                 file_bytes = f.read()
                 doc = docx.Document(io.BytesIO(file_bytes))
                 text = "\n".join(para.text for para in doc.paragraphs)
@@ -174,23 +183,23 @@ elif mode == "File":
 
 # ANALYZE
 if st.button("Analyze"):
-    st.write(f"{len(user_input)} text blocks ready for analysis.")
     if not user_input:
         st.warning("No content provided.")
     else:
-        try:
-            results = batch_classify_texts(user_input, threshold_text, threshold_word)
-            if not results:
-                st.info("No toxic content detected.")
-            else:
-                st.success("Toxic content detected!")
-                for i, (blk, cats, flagged) in enumerate(results, start=1):
-                    title = ", ".join(label_map[c] for c in cats)
-                    with st.expander(f"{i}. {title}"):
-                        st.write(blk)
-                        if flagged:
-                            st.markdown("**Flagged Words:**")
-                            for w, tags in flagged.items():
-                                st.markdown(f"- `{w}`: {', '.join(label_map[t] for t in tags)}")
-        except Exception as e:
-            st.error(f"Analysis failed: {e}")
+        with st.spinner("Analyzing content..."):
+            try:
+                results = batch_classify_texts(user_input, threshold_text, threshold_word)
+                if not results:
+                    st.info("No toxic content detected.")
+                else:
+                    st.success("Toxic content detected!")
+                    for i, (blk, cats, flagged) in enumerate(results, start=1):
+                        title = ", ".join(label_map[c] for c in cats)
+                        with st.expander(f"{i}. {title}"):
+                            st.write(blk)
+                            if flagged:
+                                st.markdown("**Flagged Words:**")
+                                for w, tags in flagged.items():
+                                    st.markdown(f"- `{w}`: {', '.join(label_map[t] for t in tags)}")
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
