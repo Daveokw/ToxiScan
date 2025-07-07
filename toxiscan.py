@@ -174,7 +174,7 @@ elif mode == "File":
 
 # ANALYZE
 if st.button("Analyze"):
-    st.write(f"DEBUG: {len(user_input)} text blocks ready for analysis.")
+    st.write(f"{len(user_input)} text blocks ready for analysis.")
     if not user_input:
         st.warning("No content provided.")
     else:
