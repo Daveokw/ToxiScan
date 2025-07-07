@@ -122,8 +122,8 @@ st.title("🛡️ ToxiScan")
 st.markdown("Enter a URL, paste text, or upload a `.txt`, `.docx`, or `.pdf` file to detect toxicity.")
 
 # Sensitivity sliders
-threshold_text = st.slider("📊 Text Sensitivity Threshold", 0.0, 1.0, 0.5, 0.05)
-threshold_word = st.slider("📉 Word Sensitivity Threshold", 0.0, 1.0, 0.3, 0.05)
+threshold_text = st.slider("📊 Text Sensitivity Threshold", 0.3, 1.0, 0.5, 0.05)
+threshold_word = st.slider("📉 Word Sensitivity Threshold", 0.3, 1.0, 0.5, 0.05)
 
 mode = st.radio("Input type:", ("URL", "Text", "File"))
 user_input: list[str] = []
