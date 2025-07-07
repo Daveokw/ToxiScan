@@ -11,13 +11,15 @@ from bs4 import BeautifulSoup
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import fitz 
-import docx 
+import docx
 
+# Load model
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(model_name)
 model.eval()
 
+# Labels
 labels = ['toxicity', 'severe_toxicity', 'obscene', 'identity_attack', 'insult', 'threat']
 label_map = {
     'toxicity': 'Toxic',
@@ -28,10 +30,14 @@ label_map = {
     'threat': 'Threat'
 }
 
+# Scrape text from URL
 def scrape_text_from_url(url):
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
     driver.get(url)
@@ -55,6 +61,7 @@ def scrape_text_from_url(url):
     texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
     return list(dict.fromkeys(texts))[:50]
 
+# Read and clean file input
 def read_file_text(filepath):
     ext = os.path.splitext(filepath)[-1].lower()
     try:
@@ -62,21 +69,19 @@ def read_file_text(filepath):
             with open(filepath, "r", encoding="utf-8") as f:
                 text = f.read()
                 return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-
         elif ext == ".pdf":
             pdf = fitz.open(filepath)
             text = "\n".join([page.get_text() for page in pdf])
             return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-
         elif ext == ".docx":
             doc = docx.Document(filepath)
             text = "\n".join([para.text for para in doc.paragraphs])
             return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-
     except Exception as e:
         messagebox.showerror("File Error", f"Failed to read {filepath}:\n{e}")
     return []
 
+# Text classification
 def batch_classify_texts(texts, threshold_text=0.5, threshold_word=0.3):
     results = []
     word_set = set()
@@ -84,21 +89,24 @@ def batch_classify_texts(texts, threshold_text=0.5, threshold_word=0.3):
         word_set |= set(re.findall(r'\b\w{3,}\b', txt.lower()))
 
     word_list = list(word_set)
-    tok_word_inputs = tokenizer(word_list, return_tensors='pt', padding=True, truncation=True, max_length=16)
-    with torch.no_grad():
-        tok_outputs = model(**tok_word_inputs)
-    word_scores = torch.sigmoid(tok_outputs.logits).cpu().numpy()
-    word_map = {
-        word_list[i]: [labels[j] for j, s in enumerate(row) if s >= threshold_word]
-        for i, row in enumerate(word_scores)
-        if any(s >= threshold_word for s in row)
-    }
+    if word_list:
+        word_inputs = tokenizer(word_list, return_tensors='pt', padding=True, truncation=True, max_length=16)
+        with torch.no_grad():
+            word_outputs = model(**word_inputs)
+        word_scores = torch.sigmoid(word_outputs.logits).cpu().numpy()
+        word_map = {
+            word_list[i]: [labels[j] for j, s in enumerate(row) if s >= threshold_word]
+            for i, row in enumerate(word_scores)
+            if any(s >= threshold_word for s in row)
+        }
+    else:
+        word_map = {}
 
     for txt in texts:
-        inputs = tokenizer(txt, return_tensors='pt', truncation=True, padding=True, max_length=512)
+        inputs = tokenizer(txt, return_tensors='pt', padding=True, truncation=True, max_length=512)
         with torch.no_grad():
             outputs = model(**inputs)
-        scores = torch.sigmoid(outputs.logits)[0].cpu().numpy()
+        scores = torch.sigmoid(outputs.logits).cpu().numpy()[0]
         categories = [labels[i] for i, s in enumerate(scores) if s >= threshold_text]
         if categories:
             toks = set(re.findall(r'\b\w{3,}\b', txt.lower()))
