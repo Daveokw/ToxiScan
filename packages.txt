@@ -1,5 +1,2 @@
-libglib2.0-0
-libnss3
-libfontconfig1
 chromium
 chromium-driver
