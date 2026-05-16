@@ -15,17 +15,16 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-    
 # DEVICE SETUP
 device = torch.device("cpu")
 
-# LOAD MODEL ON CPU
+# LOAD MODEL
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(
     model_name,
     torch_dtype=torch.float32
-).to("cpu")
+).to(device)
 model.eval()
 
 # LABELS
@@ -42,7 +41,7 @@ label_map = {
     'threat': 'Threat'
 }
 
-# SCRAPE FROM URL
+# SCRAPE TEXT FROM URL
 def get_webdriver():
     opts = Options()
     opts.add_argument("--headless")
@@ -64,9 +63,9 @@ def scrape_text_from_url(url: str) -> list[str]:
     driver = get_webdriver()
     driver.get(url)
 
-    for _ in range(5):
+    for _ in range(10):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1)
+        time.sleep(0.5)
 
     html = driver.page_source
     driver.quit()
@@ -79,7 +78,7 @@ def scrape_text_from_url(url: str) -> list[str]:
     texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
     return list(dict.fromkeys(texts))[:50]
 
-# TEXT CLASSIFICATION
+# TOXICITY ANALYSIS
 def batch_classify_texts(
     texts: list[str],
     threshold_text: float = 0.5,
@@ -117,10 +116,10 @@ def batch_classify_texts(
 
     return results
 
-# STREAMLIT APP
+# STREAMLIT UI
 st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
 st.title("🛡️ ToxiScan")
-st.markdown("Enter a URL, paste text, or upload a (`.txt`, `.docx`, `.pdf`) file to detect toxicity.")
+st.markdown("Enter a URL, paste text, or upload a `.txt`, `.docx`, or `.pdf` file to detect toxicity.")
 
 # Sensitivity sliders
 threshold_text = st.slider("📊 Text Sensitivity Threshold", 0.3, 1.0, 0.5, 0.05)
@@ -129,6 +128,7 @@ threshold_word = st.slider("📉 Word Sensitivity Threshold", 0.3, 1.0, 0.5, 0.0
 mode = st.radio("Input type:", ("URL", "Text", "File"))
 user_input: list[str] = []
 
+# URL INPUT
 if mode == "URL":
     url = st.text_input("Enter URL:")
     if url:
@@ -139,12 +139,14 @@ if mode == "URL":
         except Exception as e:
             st.error(f"Error scraping URL: {e}")
 
+# TEXT INPUT
 elif mode == "Text":
     txt = st.text_area("Paste text here:", height=200)
     if txt:
         user_input = [p for p in txt.split("\n\n") if p.strip()]
         st.success(f"Loaded {len(user_input)} text blocks from pasted text.")
 
+# FILE INPUT
 elif mode == "File":
     f = st.file_uploader("Upload a `.txt`, `.pdf`, or `.docx` file:", type=["txt", "pdf", "docx"])
     if f:
