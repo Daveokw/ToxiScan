@@ -10,7 +10,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import fitz
+import fitz 
 import docx
 
 # Load model
