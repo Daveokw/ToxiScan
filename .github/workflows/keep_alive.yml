@@ -2,8 +2,8 @@ name: Keep Streamlit App Awake
 
 on:
   schedule:
-    # This schedule runs the ping every 2 days at midnight UTC
-    - cron: "0 0 */2 * *"
+    # This schedule runs the ping every 12 hours (twice a day)
+    - cron: "0 */12 * * *"
   
   # This line allows you to trigger the action manually from GitHub's website if you ever want to
   workflow_dispatch:
