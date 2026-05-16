@@ -1,0 +1,19 @@
+name: Keep Streamlit App Awake
+
+on:
+  schedule:
+    # This schedule runs the ping every 2 days at midnight UTC
+    - cron: "0 0 */2 * *"
+  
+  # This line allows you to trigger the action manually from GitHub's website if you ever want to
+  workflow_dispatch:
+
+jobs:
+  ping-app:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+            "https://toxiscan.streamlit.app/"

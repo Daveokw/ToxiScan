@@ -1,4 +1,12 @@
+import os
+import re
+import time
+import shutil
+import io
+import sys
 import streamlit as st
+import docx
+import fitz
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from bs4 import BeautifulSoup
@@ -6,75 +14,21 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-import shutil
-import os
-import re
-import time
 
-# ─── Helper to get a Chrome webdriver ────────────────────────────────────────────
-def get_webdriver():
-    opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
+    
+# DEVICE SETUP
+device = torch.device("cpu")
 
-    # 1) If chromedriver exists on PATH (e.g. apt-installed), use it
-    sys_drv = shutil.which("chromedriver")
-    if sys_drv:
-        # On Cloud you'll also have /usr/bin/chromium; locally you can override if needed
-        if os.path.exists("/usr/bin/chromium"):
-            opts.binary_location = "/usr/bin/chromium"
-        service = Service(executable_path=sys_drv)
-        return webdriver.Chrome(service=service, options=opts)
-
-    # 2) Otherwise fall back to WebDriverManager (auto-download matching driver)
-    path = ChromeDriverManager().install()
-    service = Service(executable_path=path)
-
-    # If your Chrome binary is nonstandard, you can override here:
-    # opts.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-
-    return webdriver.Chrome(service=service, options=opts)
-
-
-# ─── Scrape text from a URL ─────────────────────────────────────────────────────
-def scrape_text_from_url(url: str) -> list[str]:
-    driver = get_webdriver()
-    driver.get(url)
-
-    # scroll to bottom to load lazy content
-    time.sleep(1)
-    last_h = driver.execute_script("return document.body.scrollHeight")
-    while True:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1)
-        new_h = driver.execute_script("return document.body.scrollHeight")
-        if new_h == last_h:
-            break
-        last_h = new_h
-
-    html = driver.page_source
-    driver.quit()
-
-    soup = BeautifulSoup(html, "html.parser")
-    # remove boilerplate tags
-    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
-        tag.decompose()
-
-    blocks = soup.find_all(["article", "p", "li", "blockquote", "div"])
-    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 30]
-    # dedupe and limit
-    return list(dict.fromkeys(texts))[:50]
-
-
-# ─── Batch classification with ToxicBERT ────────────────────────────────────────
+# LOAD MODEL ON CPU
 model_name = "unitary/toxic-bert"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
-model.to("cpu")
+model = AutoModelForSequenceClassification.from_pretrained(
+    model_name,
+    torch_dtype=torch.float32
+).to("cpu")
 model.eval()
 
+# LABELS
 labels = [
     'toxicity', 'severe_toxicity', 'obscene',
     'identity_attack', 'insult', 'threat'
@@ -88,6 +42,44 @@ label_map = {
     'threat': 'Threat'
 }
 
+# SCRAPE FROM URL
+def get_webdriver():
+    opts = Options()
+    opts.add_argument("--headless")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    if os.path.exists("/usr/bin/chromium"):
+        opts.binary_location = "/usr/bin/chromium"
+
+    sys_drv = shutil.which("chromedriver")
+    if sys_drv:
+        service = Service(executable_path=sys_drv)
+    else:
+        service = Service(ChromeDriverManager().install())
+
+    return webdriver.Chrome(service=service, options=opts)
+
+def scrape_text_from_url(url: str) -> list[str]:
+    driver = get_webdriver()
+    driver.get(url)
+
+    for _ in range(5):
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1)
+
+    html = driver.page_source
+    driver.quit()
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+        tag.decompose()
+
+    blocks = soup.find_all(["article", "p", "li", "blockquote", "div"])
+    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
+    return list(dict.fromkeys(texts))[:50]
+
+# TEXT CLASSIFICATION
 def batch_classify_texts(
     texts: list[str],
     threshold_text: float = 0.5,
@@ -99,18 +91,19 @@ def batch_classify_texts(
         word_set |= set(re.findall(r"\b\w{3,}\b", txt.lower()))
     word_list = list(word_set)
 
-    # classify words
-    tok_w = tokenizer(word_list, return_tensors="pt", padding=True, truncation=True, max_length=16)
-    with torch.no_grad():
-        logits_w = model(**tok_w).logits
-    scores_w = torch.sigmoid(logits_w).cpu().numpy()
-    word_map = {
-        word_list[i]: [labels[j] for j, s in enumerate(row) if s >= threshold_word]
-        for i, row in enumerate(scores_w)
-        if any(s >= threshold_word for s in row)
-    }
+    if word_list:
+        tok_w = tokenizer(word_list, return_tensors="pt", padding=True, truncation=True, max_length=16)
+        with torch.no_grad():
+            logits_w = model(**tok_w).logits
+        scores_w = torch.sigmoid(logits_w).cpu().numpy()
+        word_map = {
+            word_list[i]: [labels[j] for j, s in enumerate(row) if s >= threshold_word]
+            for i, row in enumerate(scores_w)
+            if any(s >= threshold_word for s in row)
+        }
+    else:
+        word_map = {}
 
-    # classify full texts
     for txt in texts:
         tok_t = tokenizer(txt, return_tensors="pt", truncation=True, padding=True, max_length=512)
         with torch.no_grad():
@@ -124,11 +117,14 @@ def batch_classify_texts(
 
     return results
 
-
-# ─── Streamlit UI ─────────────────────────────────────────────────────────────
+# STREAMLIT APP
 st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
 st.title("🛡️ ToxiScan")
-st.markdown("Enter a URL, paste text, or upload a `.txt` file to detect toxicity.")
+st.markdown("Enter a URL, paste text, or upload a (`.txt`, `.docx`, `.pdf`) file to detect toxicity.")
+
+# Sensitivity sliders
+threshold_text = st.slider("📊 Text Sensitivity Threshold", 0.3, 1.0, 0.5, 0.05)
+threshold_word = st.slider("📉 Word Sensitivity Threshold", 0.3, 1.0, 0.5, 0.05)
 
 mode = st.radio("Input type:", ("URL", "Text", "File"))
 user_input: list[str] = []
@@ -139,33 +135,61 @@ if mode == "URL":
         st.info("Scraping text…")
         try:
             user_input = scrape_text_from_url(url)
+            st.success(f"Scraped {len(user_input)} text blocks.")
         except Exception as e:
             st.error(f"Error scraping URL: {e}")
 
 elif mode == "Text":
     txt = st.text_area("Paste text here:", height=200)
     if txt:
-        user_input = [txt]
+        user_input = [p for p in txt.split("\n\n") if p.strip()]
+        st.success(f"Loaded {len(user_input)} text blocks from pasted text.")
 
-else:  # File
-    f = st.file_uploader("Upload a `.txt` file:", type=["txt"])
+elif mode == "File":
+    f = st.file_uploader("Upload a `.txt`, `.pdf`, or `.docx` file:", type=["txt", "pdf", "docx"])
     if f:
-        lines = f.read().decode("utf-8").splitlines()
-        user_input = [L for L in lines if len(L.strip()) > 30]
+        filename = f.name.lower()
+        try:
+            if filename.endswith(".txt"):
+                text = f.read().decode("utf-8")
+                user_input = [p for p in text.split("\n\n") if p.strip()]
+                st.success(f"Loaded {len(user_input)} blocks from .txt file.")
 
+            elif filename.endswith(".pdf"):
+                pdf = fitz.open(stream=f.read(), filetype="pdf")
+                text = "\n".join(page.get_text() for page in pdf)
+                user_input = [p for p in text.split("\n\n") if p.strip()]
+                st.success(f"Loaded {len(user_input)} blocks from PDF.")
+
+            elif filename.endswith(".docx"):
+                file_bytes = f.read()
+                doc = docx.Document(io.BytesIO(file_bytes))
+                text = "\n".join(para.text for para in doc.paragraphs)
+                st.text_area("📝 Extracted Text Preview", text, height=200)
+                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 10]
+                st.success(f"Loaded {len(user_input)} text blocks from DOCX.")
+        except Exception as e:
+            st.error(f"Failed to process file: {e}")
+
+# ANALYZE
 if st.button("Analyze"):
     if not user_input:
         st.warning("No content provided.")
     else:
-        results = batch_classify_texts(user_input)
-        if not results:
-            st.info("No toxic content detected.")
-        else:
-            for i, (blk, cats, flagged) in enumerate(results, start=1):
-                title = ", ".join(label_map[c] for c in cats)
-                with st.expander(f"{i}. {title}"):
-                    st.write(blk)
-                    if flagged:
-                        st.markdown("**Flagged Words:**")
-                        for w, tags in flagged.items():
-                            st.markdown(f"- `{w}`: {', '.join(label_map[t] for t in tags)}")
+        with st.spinner("Analyzing content..."):
+            try:
+                results = batch_classify_texts(user_input, threshold_text, threshold_word)
+                if not results:
+                    st.info("No toxic content detected.")
+                else:
+                    st.success("Toxic content detected!")
+                    for i, (blk, cats, flagged) in enumerate(results, start=1):
+                        title = ", ".join(label_map[c] for c in cats)
+                        with st.expander(f"{i}. {title}"):
+                            st.write(blk)
+                            if flagged:
+                                st.markdown("**Flagged Words:**")
+                                for w, tags in flagged.items():
+                                    st.markdown(f"- `{w}`: {', '.join(label_map[t] for t in tags)}")
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
