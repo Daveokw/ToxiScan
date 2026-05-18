@@ -2,18 +2,36 @@ name: Keep Streamlit App Awake
 
 on:
   schedule:
-    # This schedule runs the ping every 12 hours (twice a day)
-    - cron: "0 */12 * * *"
+    # This schedule runs the keep-alive every 6 hours
+    - cron: "0 */6 * * *"
   
-  # This line allows you to trigger the action manually from GitHub's website if you ever want to
+  # Allows you to trigger the action manually from GitHub's Actions tab
   workflow_dispatch:
 
 jobs:
-  ping-app:
+  keep-alive:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Streamlit App
-        run: |
-          curl -s -o /dev/null -w "%{http_code}" \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-            "https://toxiscan.streamlit.app/"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        run: npm install playwright
+
+      - name: Install Chromium browser
+        run: npx playwright install chromium
+
+      - name: Run Playwright Keep-Alive Script
+        run: node keep_alive.js "https://toxiscan.streamlit.app/"
+
+      - name: Upload Screenshot Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: keep-alive-screenshot
+          path: keep_alive_screenshot.png
+          retention-days: 3
