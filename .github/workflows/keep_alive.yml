@@ -2,15 +2,20 @@ name: Keep Streamlit App Awake
 
 on:
   schedule:
-    # This schedule runs the keep-alive every 6 hours
     - cron: "0 */6 * * *"
-  
-  # Allows you to trigger the action manually from GitHub's Actions tab
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-streamlit-app-awake
+  cancel-in-progress: true
 
 jobs:
   keep-alive:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,19 +24,22 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
 
-      - name: Install Playwright
-        run: npm install playwright
+      - name: Install locked Node dependencies
+        run: npm ci --ignore-scripts
 
       - name: Install Chromium browser
-        run: npx playwright install chromium
+        run: npx playwright install --with-deps chromium
 
-      - name: Run Playwright Keep-Alive Script
-        run: node keep_alive.js "https://toxiscan.streamlit.app/"
+      - name: Check the deployed application
+        run: npm run keep-alive -- "https://toxiscan.streamlit.app/"
 
-      - name: Upload Screenshot Artifact
+      - name: Upload failure screenshot
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: keep-alive-screenshot
           path: keep_alive_screenshot.png
+          if-no-files-found: ignore
           retention-days: 3

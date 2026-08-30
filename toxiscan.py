@@ -1,197 +1,184 @@
-import os
-import re
-import time
-import shutil
-import io
-import sys
+"""Streamlit interface for ToxiScan."""
+
+from __future__ import annotations
+
+import logging
+from collections import Counter
+
 import streamlit as st
-import docx
-import fitz
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
-# DEVICE SETUP
-device = torch.device("cpu")
+from toxiscan_core.classifier import BlockAnalysis, ClassificationError, analyse_blocks
+from toxiscan_core.config import DOCUMENT_LIMITS
+from toxiscan_core.documents import (
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+    DocumentExtractionError,
+    extract_document,
+)
+from toxiscan_core.text import ExtractedText, prepare_text
+from toxiscan_core.web import WebExtractionError, scrape_url
 
-# LOAD MODEL
-model_name = "unitary/toxic-bert"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(
-    model_name,
-    torch_dtype=torch.float32
-).to(device)
-model.eval()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-# LABELS
-labels = [
-    'toxicity', 'severe_toxicity', 'obscene',
-    'identity_attack', 'insult', 'threat'
-]
-label_map = {
-    'toxicity': 'Toxic',
-    'severe_toxicity': 'Highly Toxic',
-    'obscene': 'Obscene',
-    'identity_attack': 'Hate',
-    'insult': 'Insult',
-    'threat': 'Threat'
-}
 
-# SCRAPE TEXT FROM URL
-def get_webdriver():
-    opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    if os.path.exists("/usr/bin/chromium"):
-        opts.binary_location = "/usr/bin/chromium"
+def _render_results(results: tuple[BlockAnalysis, ...]) -> None:
+    flagged = [result for result in results if result.flagged]
+    category_counts = Counter(
+        category.label for result in flagged for category in result.categories
+    )
 
-    sys_drv = shutil.which("chromedriver")
-    if sys_drv:
-        service = Service(executable_path=sys_drv)
-    else:
-        service = Service(ChromeDriverManager().install())
+    first_metric, second_metric, third_metric = st.columns(3)
+    first_metric.metric("Blocks analysed", len(results))
+    second_metric.metric("Blocks flagged", len(flagged))
+    third_metric.metric("Categories detected", len(category_counts))
 
-    return webdriver.Chrome(service=service, options=opts)
+    if not flagged:
+        st.success("No content exceeded the selected detection threshold.")
+        return
 
-def scrape_text_from_url(url: str) -> list[str]:
-    driver = get_webdriver()
-    driver.get(url)
+    st.warning(
+        f"{len(flagged)} of {len(results)} analysed blocks exceeded the selected threshold."
+    )
+    for index, result in enumerate(flagged, start=1):
+        heading = ", ".join(category.label for category in result.categories)
+        with st.expander(f"{index}. {heading}", expanded=index == 1):
+            st.write(result.text)
+            st.markdown("**Category confidence**")
+            for category in result.categories:
+                st.write(f"{category.label}: {category.score:.1%}")
 
-    for _ in range(10):
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(0.5)
+            if result.evidence:
+                st.markdown("**Contextual evidence**")
+                for evidence in result.evidence:
+                    labels = ", ".join(
+                        f"{category.label} ({category.score:.1%})"
+                        for category in evidence.categories
+                    )
+                    st.info(f"{evidence.text}\n\n{labels}")
 
-    html = driver.page_source
-    driver.quit()
 
-    soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
-        tag.decompose()
+def _analyse(extracted: ExtractedText, threshold: float) -> None:
+    if extracted.truncated:
+        st.warning("The safe processing limit was reached; the available content was analysed.")
 
-    blocks = soup.find_all(["article", "p", "li", "blockquote", "div"])
-    texts = [b.get_text(strip=True) for b in blocks if len(b.get_text(strip=True)) > 5]
-    return list(dict.fromkeys(texts))[:50]
+    with st.spinner("Loading the model and analysing context…"):
+        results = analyse_blocks(extracted.blocks, threshold)
+    _render_results(results)
 
-# TOXICITY ANALYSIS
-def batch_classify_texts(
-    texts: list[str],
-    threshold_text: float = 0.5,
-    threshold_word: float = 0.3
-) -> list[tuple[str, list[str], dict[str, list[str]]]]:
-    results = []
-    word_set = set()
-    for txt in texts:
-        word_set |= set(re.findall(r"\b\w{3,}\b", txt.lower()))
-    word_list = list(word_set)
 
-    if word_list:
-        tok_w = tokenizer(word_list, return_tensors="pt", padding=True, truncation=True, max_length=16)
-        with torch.no_grad():
-            logits_w = model(**tok_w).logits
-        scores_w = torch.sigmoid(logits_w).cpu().numpy()
-        word_map = {
-            word_list[i]: [labels[j] for j, s in enumerate(row) if s >= threshold_word]
-            for i, row in enumerate(scores_w)
-            if any(s >= threshold_word for s in row)
-        }
-    else:
-        word_map = {}
+def _render_web_input(threshold: float) -> None:
+    with st.form("web-page-form"):
+        url = st.text_input(
+            "Public web page URL",
+            placeholder="https://example.com/discussion",
+            help="Public pages and accessible comment sections are analysed on a best-effort basis.",
+        )
+        submitted = st.form_submit_button("Scan page", type="primary")
 
-    for txt in texts:
-        tok_t = tokenizer(txt, return_tensors="pt", truncation=True, padding=True, max_length=512)
-        with torch.no_grad():
-            logits_t = model(**tok_t).logits
-        scores_t = torch.sigmoid(logits_t)[0].cpu().numpy()
-        cats = [labels[i] for i, s in enumerate(scores_t) if s >= threshold_text]
-        if cats:
-            toks = set(re.findall(r"\b\w{3,}\b", txt.lower()))
-            flagged = {w: word_map[w] for w in toks if w in word_map}
-            results.append((txt, cats, flagged))
+    if not submitted:
+        return
+    if not url.strip():
+        st.warning("Enter a public web page URL.")
+        return
 
-    return results
+    with st.spinner("Loading the page and accessible comments within safe limits…"):
+        scraped = scrape_url(url)
+    for warning in scraped.warnings:
+        st.warning(warning)
+    rendering_note = " with browser rendering" if scraped.used_browser else ""
+    st.caption(
+        f"Extracted {len(scraped.text.blocks)} blocks from the public page{rendering_note}."
+    )
+    _analyse(scraped.text, threshold)
 
-# STREAMLIT UI
-st.set_page_config(page_title="🛡️ ToxiScan", layout="wide")
-st.title("🛡️ ToxiScan")
-st.markdown("Enter a URL, paste text, or upload a `.txt`, `.docx`, or `.pdf` file to detect toxicity.")
 
-# Sensitivity sliders
-threshold_text = st.slider("📊 Text Sensitivity Threshold", 0.3, 1.0, 0.5, 0.05)
-threshold_word = st.slider("📉 Word Sensitivity Threshold", 0.3, 1.0, 0.5, 0.05)
+def _render_text_input(threshold: float) -> None:
+    with st.form("pasted-text-form"):
+        value = st.text_area(
+            "Text to analyse",
+            height=240,
+            placeholder="Paste comments, messages, or longer text here…",
+        )
+        submitted = st.form_submit_button("Analyse text", type="primary")
 
-mode = st.radio("Input type:", ("URL", "Text", "File"))
-user_input: list[str] = []
+    if not submitted:
+        return
+    extracted = prepare_text(value, DOCUMENT_LIMITS.text)
+    if not extracted.blocks:
+        st.warning("Enter some readable text to analyse.")
+        return
+    _analyse(extracted, threshold)
 
-# URL INPUT
-if mode == "URL":
-    url = st.text_input("Enter URL:")
-    if url:
-        st.info("Scraping text…")
-        try:
-            user_input = scrape_text_from_url(url)
-            st.success(f"Scraped {len(user_input)} text blocks.")
-        except Exception as e:
-            st.error(f"Error scraping URL: {e}")
 
-# TEXT INPUT
-elif mode == "Text":
-    txt = st.text_area("Paste text here:", height=200)
-    if txt:
-        user_input = [p for p in txt.split("\n\n") if p.strip()]
-        st.success(f"Loaded {len(user_input)} text blocks from pasted text.")
+def _render_document_input(threshold: float) -> None:
+    accepted_types = sorted(
+        extension.removeprefix(".") for extension in SUPPORTED_DOCUMENT_EXTENSIONS
+    )
+    with st.form("document-form"):
+        upload = st.file_uploader(
+            "Upload a document",
+            type=accepted_types,
+            max_upload_size=DOCUMENT_LIMITS.max_upload_bytes // (1024 * 1024),
+            help="ToxiScan accepts a wide range of documents and extracts readable text locally.",
+        )
+        submitted = st.form_submit_button("Analyse document", type="primary")
 
-# FILE INPUT
-elif mode == "File":
-    f = st.file_uploader("Upload a `.txt`, `.pdf`, or `.docx` file:", type=["txt", "pdf", "docx"])
-    if f:
-        filename = f.name.lower()
-        try:
-            if filename.endswith(".txt"):
-                text = f.read().decode("utf-8")
-                user_input = [p for p in text.split("\n\n") if p.strip()]
-                st.success(f"Loaded {len(user_input)} blocks from .txt file.")
+    if not submitted:
+        return
+    if upload is None:
+        st.warning("Choose a document to analyse.")
+        return
 
-            elif filename.endswith(".pdf"):
-                pdf = fitz.open(stream=f.read(), filetype="pdf")
-                text = "\n".join(page.get_text() for page in pdf)
-                user_input = [p for p in text.split("\n\n") if p.strip()]
-                st.success(f"Loaded {len(user_input)} blocks from PDF.")
+    with st.spinner("Reading and validating the document…"):
+        extracted = extract_document(upload.name, upload.getvalue())
+    st.caption(f"Extracted {len(extracted.blocks)} readable blocks from the document.")
+    _analyse(extracted, threshold)
 
-            elif filename.endswith(".docx"):
-                file_bytes = f.read()
-                doc = docx.Document(io.BytesIO(file_bytes))
-                text = "\n".join(para.text for para in doc.paragraphs)
-                st.text_area("📝 Extracted Text Preview", text, height=200)
-                user_input = [p for p in text.split("\n\n") if len(p.strip()) > 10]
-                st.success(f"Loaded {len(user_input)} text blocks from DOCX.")
-        except Exception as e:
-            st.error(f"Failed to process file: {e}")
 
-# ANALYZE
-if st.button("Analyze"):
-    if not user_input:
-        st.warning("No content provided.")
-    else:
-        with st.spinner("Analyzing content..."):
-            try:
-                results = batch_classify_texts(user_input, threshold_text, threshold_word)
-                if not results:
-                    st.info("No toxic content detected.")
-                else:
-                    st.success("Toxic content detected!")
-                    for i, (blk, cats, flagged) in enumerate(results, start=1):
-                        title = ", ".join(label_map[c] for c in cats)
-                        with st.expander(f"{i}. {title}"):
-                            st.write(blk)
-                            if flagged:
-                                st.markdown("**Flagged Words:**")
-                                for w, tags in flagged.items():
-                                    st.markdown(f"- `{w}`: {', '.join(label_map[t] for t in tags)}")
-            except Exception as e:
-                st.error(f"Analysis failed: {e}")
+def main() -> None:
+    st.set_page_config(page_title="ToxiScan", page_icon="🛡️", layout="wide")
+    st.title("🛡️ ToxiScan")
+    st.write(
+        "Analyse pasted text, public web pages, accessible comments, and a wide range "
+        "of documents for potentially toxic language."
+    )
+
+    with st.sidebar:
+        st.header("Detection settings")
+        threshold = st.slider(
+            "Detection threshold",
+            min_value=0.30,
+            max_value=0.90,
+            value=0.50,
+            step=0.05,
+            help="Lower values flag more content; higher values require stronger model confidence.",
+        )
+        st.caption(
+            "Automated scores are indicators, not definitive judgements. Review context before acting."
+        )
+
+    mode = st.radio(
+        "Choose an input source",
+        ("Web page", "Pasted text", "Document"),
+        horizontal=True,
+    )
+
+    try:
+        if mode == "Web page":
+            _render_web_input(threshold)
+        elif mode == "Pasted text":
+            _render_text_input(threshold)
+        else:
+            _render_document_input(threshold)
+    except (DocumentExtractionError, WebExtractionError, ClassificationError) as error:
+        st.error(str(error))
+    except Exception:
+        logger.exception("Unexpected application failure", extra={"input_mode": mode})
+        st.error("ToxiScan could not complete the analysis. Please try again later.")
+
+
+if __name__ == "__main__":
+    main()

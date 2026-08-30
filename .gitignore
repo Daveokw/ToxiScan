@@ -1,0 +1,21 @@
+# Local Python environments and caches
+.venv/
+.uv-cache/
+.npm-cache/
+.hf-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Runtime artefacts
+*.log
+keep_alive_screenshot.png
