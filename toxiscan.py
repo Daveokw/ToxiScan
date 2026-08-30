@@ -10,7 +10,6 @@ import streamlit as st
 from toxiscan_core.classifier import BlockAnalysis, ClassificationError, analyse_blocks
 from toxiscan_core.config import DOCUMENT_LIMITS
 from toxiscan_core.documents import (
-    SUPPORTED_DOCUMENT_EXTENSIONS,
     DocumentExtractionError,
     extract_document,
 )
@@ -114,13 +113,9 @@ def _render_text_input(threshold: float) -> None:
 
 
 def _render_document_input(threshold: float) -> None:
-    accepted_types = sorted(
-        extension.removeprefix(".") for extension in SUPPORTED_DOCUMENT_EXTENSIONS
-    )
     with st.form("document-form"):
         upload = st.file_uploader(
             "Upload a document",
-            type=accepted_types,
             max_upload_size=DOCUMENT_LIMITS.max_upload_bytes // (1024 * 1024),
             help="ToxiScan accepts a wide range of documents and extracts readable text locally.",
         )
