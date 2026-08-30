@@ -1,0 +1,15 @@
+{
+  "name": "toxiscan-keep-alive",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deterministic browser dependency for the ToxiScan availability check.",
+  "scripts": {
+    "keep-alive": "node keep_alive.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "1.62.1"
+  }
+}
