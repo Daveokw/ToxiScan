@@ -6,6 +6,8 @@ const FAILURE_SCREENSHOT = 'keep_alive_screenshot.png';
 const INITIAL_STATE_TIMEOUT_MS = 120000;
 const WAKE_TIMEOUT_MS = 300000;
 const CONNECTION_HOLD_MS = 15000;
+const POLL_INTERVAL_MS = 1000;
+const WAKE_CONTROL_PATTERN = /wake(?: up)?|back up|restart(?: this)? app|run(?: this)? app/i;
 
 function validatedTarget(rawValue) {
   if (!rawValue) {
@@ -28,37 +30,78 @@ function validatedTarget(rawValue) {
   return target.toString();
 }
 
-async function waitForState(page, timeoutMs) {
-  const appHeading = page.getByRole('heading').filter({ hasText: APP_HEADING }).first();
-  const wakeUpButton = page.getByRole('button', {
-    name: /get this app back up/i,
-  }).first();
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    if (await appHeading.isVisible()) {
-      return { state: 'ready', appHeading, wakeUpButton };
+async function firstVisible(page, locatorFactory) {
+  for (const frame of page.frames()) {
+    const locator = locatorFactory(frame).first();
+    if (await locator.isVisible().catch(() => false)) {
+      return locator;
     }
-    if (await wakeUpButton.isVisible()) {
-      return { state: 'sleeping', appHeading, wakeUpButton };
-    }
-    await page.waitForTimeout(1000);
   }
-
-  throw new Error('Neither the application nor the Streamlit wake-up control became visible.');
+  return null;
 }
 
-async function waitForApplication(appHeading, page, timeoutMs) {
+async function applicationIsReady(page) {
+  for (const frame of page.frames()) {
+    const heading = frame.getByRole('heading').filter({ hasText: APP_HEADING }).first();
+    const appContainer = frame.locator('[data-testid="stAppViewContainer"]').first();
+    const headingVisible = await heading.isVisible().catch(() => false);
+    const containerVisible = await appContainer.isVisible().catch(() => false);
+    if (headingVisible && containerVisible) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function visibleWakeControl(page) {
+  const button = await firstVisible(page, (frame) => frame.getByRole('button', {
+    name: WAKE_CONTROL_PATTERN,
+  }));
+  if (button) {
+    return button;
+  }
+  return firstVisible(page, (frame) => frame.getByRole('link', {
+    name: WAKE_CONTROL_PATTERN,
+  }));
+}
+
+async function observedFrames(page) {
+  const observations = [];
+  for (const frame of page.frames()) {
+    const text = await frame.locator('body').innerText().catch(() => '');
+    observations.push(`${frame.url()} :: ${text.replace(/\s+/g, ' ').trim().slice(0, 160) || '[no body text]'}`);
+  }
+  return observations.join(' | ');
+}
+
+async function waitForState(page, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    if (await appHeading.isVisible()) {
-      return;
+    if (await applicationIsReady(page)) {
+      return { state: 'ready' };
     }
-    await page.waitForTimeout(1000);
+    const wakeControl = await visibleWakeControl(page);
+    if (wakeControl) {
+      return { state: 'sleeping', wakeControl };
+    }
+    await page.waitForTimeout(POLL_INTERVAL_MS);
   }
 
-  throw new Error('The application did not become ready after the wake-up request.');
+  throw new Error(`Neither the application nor a Streamlit wake-up control became visible. Observed frames: ${await observedFrames(page)}`);
+}
+
+async function waitForApplication(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (await applicationIsReady(page)) {
+      return;
+    }
+    await page.waitForTimeout(POLL_INTERVAL_MS);
+  }
+
+  throw new Error(`The application did not become ready after the wake-up request. Observed frames: ${await observedFrames(page)}`);
 }
 
 async function run() {
@@ -84,12 +127,12 @@ async function run() {
     const result = await waitForState(page, INITIAL_STATE_TIMEOUT_MS);
     if (result.state === 'sleeping') {
       console.log('The app is asleep; submitting the wake-up request.');
-      await result.wakeUpButton.click({ timeout: 10000 });
-      await waitForApplication(result.appHeading, page, WAKE_TIMEOUT_MS);
+      await result.wakeControl.click({ timeout: 10000 });
+      await waitForApplication(page, WAKE_TIMEOUT_MS);
     }
 
     await page.waitForTimeout(CONNECTION_HOLD_MS);
-    if (!(await result.appHeading.isVisible())) {
+    if (!(await applicationIsReady(page))) {
       throw new Error('The application became unavailable during verification.');
     }
 
