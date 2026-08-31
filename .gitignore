@@ -2,6 +2,7 @@
 .venv/
 .uv-cache/
 .npm-cache/
+node_modules/
 .hf-cache/
 __pycache__/
 *.py[cod]
