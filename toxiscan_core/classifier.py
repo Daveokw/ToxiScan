@@ -32,6 +32,8 @@ DISPLAY_LABELS = {
 
 _SENTENCE_OR_LINE = re.compile(r"(?<=[.!?])\s+|\n+")
 _CLAUSE_BOUNDARY = re.compile(r"(?<=[,;:—])\s+")
+_UPPERCASE_NORMALISATION_MINIMUM_LETTERS = 8
+_UPPERCASE_NORMALISATION_RATIO = 0.8
 
 
 class ClassificationError(RuntimeError):
@@ -176,6 +178,16 @@ def _categories_above(
     )
 
 
+def _normalise_for_inference(text: str) -> str:
+    """Remove casing-only emphasis that can cause false positives in headers."""
+
+    letters = [character for character in text if character.isalpha()]
+    if len(letters) < _UPPERCASE_NORMALISATION_MINIMUM_LETTERS:
+        return text
+    uppercase_ratio = sum(character.isupper() for character in letters) / len(letters)
+    return text.casefold() if uppercase_ratio >= _UPPERCASE_NORMALISATION_RATIO else text
+
+
 def _candidate_phrases(text: str, maximum: int) -> tuple[str, ...]:
     candidates: list[str] = []
     seen: set[str] = set()
@@ -212,28 +224,36 @@ def analyse_blocks(
     """Analyse every block with overlapping windows and contextual evidence."""
 
     _validate_threshold(threshold)
-    evidence_cutoff = threshold if evidence_threshold is None else evidence_threshold
+    evidence_cutoff = (
+        min(1.0, threshold + settings.evidence_threshold_margin)
+        if evidence_threshold is None
+        else evidence_threshold
+    )
     _validate_threshold(evidence_cutoff)
 
     active_bundle = bundle or load_model_bundle(settings.model_name)
-    block_scores = _score_texts(texts, active_bundle, settings)
+    inference_texts = tuple(_normalise_for_inference(text) for text in texts)
+    block_scores = _score_texts(inference_texts, active_bundle, settings)
     block_categories = [
         _categories_above(scores, threshold) for scores in block_scores
     ]
 
     evidence_inputs: list[str] = []
     evidence_owners: list[int] = []
+    owners_with_candidates: set[int] = set()
     for block_index, (text, categories) in enumerate(zip(texts, block_categories)):
         if not categories:
             continue
         candidates = _candidate_phrases(text, settings.max_evidence_candidates)
+        if candidates:
+            owners_with_candidates.add(block_index)
         evidence_inputs.extend(candidates)
         evidence_owners.extend([block_index] * len(candidates))
 
     evidence_by_block: dict[int, list[Evidence]] = {}
     if evidence_inputs:
         evidence_scores = _score_texts(
-            evidence_inputs,
+            tuple(_normalise_for_inference(text) for text in evidence_inputs),
             active_bundle,
             settings,
             batch_size=settings.evidence_batch_size,
@@ -259,6 +279,13 @@ def analyse_blocks(
             key=lambda item: max(category.score for category in item.categories),
             reverse=True,
         )
+        if index in owners_with_candidates:
+            confirmed_keys = {
+                category.key for item in evidence for category in item.categories
+            }
+            categories = tuple(
+                category for category in categories if category.key in confirmed_keys
+            )
         analyses.append(
             BlockAnalysis(
                 text,

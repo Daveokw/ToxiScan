@@ -6,10 +6,16 @@ import torch
 from toxiscan_core.classifier import (
     MODERATION_LABELS,
     ModelBundle,
+    _normalise_for_inference,
     _score_texts,
     analyse_blocks,
 )
 from toxiscan_core.config import ClassifierSettings
+
+NEUTRAL_UPPERCASE_HEADER = (
+    "LADOKE AKINTOLA UNIVERSITY OF TECHNOLOGY P.M.B 4000, "
+    "OGBOMOSO, OYO STATE, NIGERIA OFFICE OF THE REGISTRAR"
+)
 
 
 class StubTokenizer:
@@ -23,6 +29,10 @@ class StubTokenizer:
                 text_codes = (1,)
             elif text == "everything":
                 text_codes = (3,)
+            elif text == "A neutral sentence. Another neutral sentence.":
+                text_codes = (4,)
+            elif text == NEUTRAL_UPPERCASE_HEADER:
+                text_codes = (5,)
             else:
                 text_codes = (0,)
             codes.extend(text_codes)
@@ -51,6 +61,11 @@ class StubModel:
                 logits[row, 5] = 5.0
             elif code == 3:
                 logits[row, :] = 5.0
+            elif code == 4:
+                logits[row, 0] = 4.0
+            elif code == 5:
+                logits[row, 0] = 4.0
+                logits[row, 3] = 3.0
         return SimpleNamespace(logits=logits)
 
 
@@ -101,6 +116,34 @@ def test_analyse_blocks_keeps_unflagged_blocks_in_source_order():
     assert [result.text for result in results] == ["safe", "You are awful."]
     assert results[0].flagged is False
     assert results[1].flagged is True
+
+
+def test_uppercase_document_header_is_normalised_before_inference():
+    bundle = make_bundle()
+    raw_scores = _score_texts(
+        (NEUTRAL_UPPERCASE_HEADER,), bundle, ClassifierSettings()
+    )[0]
+    result = analyse_blocks(
+        (NEUTRAL_UPPERCASE_HEADER,), threshold=0.5, bundle=bundle
+    )[0]
+
+    assert raw_scores["toxicity"] > 0.9
+    assert _normalise_for_inference(NEUTRAL_UPPERCASE_HEADER) == (
+        NEUTRAL_UPPERCASE_HEADER.casefold()
+    )
+    assert result.flagged is False
+
+
+def test_unconfirmed_contextual_category_is_not_returned():
+    result = analyse_blocks(
+        ("A neutral sentence. Another neutral sentence.",),
+        threshold=0.5,
+        bundle=make_bundle(),
+    )[0]
+
+    assert result.flagged is False
+    assert result.categories == ()
+    assert result.evidence == ()
 
 
 @pytest.mark.parametrize("threshold", (-0.1, 1.1))

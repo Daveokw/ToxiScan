@@ -62,6 +62,7 @@ class ClassifierSettings:
     stride_tokens: int = 128
     batch_size: int = 8
     evidence_batch_size: int = 12
+    evidence_threshold_margin: float = 0.05
     max_evidence_candidates: int = 30
     max_evidence_results: int = 5
 
