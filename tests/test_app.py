@@ -16,7 +16,7 @@ def test_initial_web_page_mode_renders_without_loading_model():
     assert app.title[0].value == "🛡️ ToxiScan"
     assert app.radio[0].value == "Web page"
     assert app.button[0].label == "Scan page"
-    assert app.slider[0].value == 0.7
+    assert app.slider[0].value == 0.75
     assert load_model_bundle.cache_info().currsize == 0
 
 

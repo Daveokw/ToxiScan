@@ -156,9 +156,12 @@ def main() -> None:
             "Detection threshold",
             min_value=0.50,
             max_value=0.90,
-            value=0.70,
+            value=0.75,
             step=0.05,
-            help="Lower values flag more content; higher values require stronger evidence.",
+            help=(
+                "Lower values are more sensitive and may increase false positives; "
+                "higher values require stronger evidence."
+            ),
         )
         st.caption(
             "Automated results are indicators, not definitive judgements. Review context before acting."
