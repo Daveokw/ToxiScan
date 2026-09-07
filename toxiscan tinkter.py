@@ -30,7 +30,7 @@ class ToxiScanDesktop(tk.Tk):
         self.title("🛡️ ToxiScan")
         self.geometry("920x780")
         self.configure(bg="#f0f0f0")
-        self.threshold = tk.DoubleVar(value=0.5)
+        self.threshold = tk.DoubleVar(value=0.7)
         self.status = tk.StringVar(value="Ready")
         self._build_layout()
 
@@ -172,18 +172,15 @@ class ToxiScanDesktop(tk.Tk):
         flagged = [analysis for analysis in analyses if analysis.flagged]
         if not flagged:
             self.results.insert(
-                tk.END, "No content exceeded the selected detection threshold.\n"
+                tk.END, "No potentially harmful language was detected.\n"
             )
         for index, analysis in enumerate(flagged, start=1):
-            labels = ", ".join(
-                f"{category.label} ({category.score:.1%})"
-                for category in analysis.categories
-            )
+            labels = ", ".join(category.label for category in analysis.categories)
             self.results.insert(tk.END, f"{index}. {labels}\n{analysis.text}\n")
             for evidence in analysis.evidence:
                 self.results.insert(tk.END, f"   Evidence: {evidence.text}\n")
             self.results.insert(tk.END, "\n")
-        self.status.set(f"Complete — {len(flagged)} of {len(analyses)} blocks flagged")
+        self.status.set(f"Complete — {len(flagged)} of {len(analyses)} sections flagged")
 
 
 def main() -> None:

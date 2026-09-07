@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from inspect import signature
 
 import streamlit as st
 
@@ -30,33 +31,30 @@ def _render_results(results: tuple[BlockAnalysis, ...]) -> None:
     )
 
     first_metric, second_metric, third_metric = st.columns(3)
-    first_metric.metric("Blocks analysed", len(results))
-    second_metric.metric("Blocks flagged", len(flagged))
+    first_metric.metric("Sections analysed", len(results))
+    second_metric.metric("Sections flagged", len(flagged))
     third_metric.metric("Categories detected", len(category_counts))
 
     if not flagged:
-        st.success("No content exceeded the selected detection threshold.")
+        st.success("No potentially harmful language was detected.")
         return
 
     st.warning(
-        f"{len(flagged)} of {len(results)} analysed blocks exceeded the selected threshold."
+        f"Potentially harmful language was detected in {len(flagged)} of "
+        f"{len(results)} analysed sections."
     )
     for index, result in enumerate(flagged, start=1):
         heading = ", ".join(category.label for category in result.categories)
         with st.expander(f"{index}. {heading}", expanded=index == 1):
             st.write(result.text)
-            st.markdown("**Category confidence**")
-            for category in result.categories:
-                st.write(f"{category.label}: {category.score:.1%}")
-
             if result.evidence:
                 st.markdown("**Contextual evidence**")
                 for evidence in result.evidence:
                     labels = ", ".join(
-                        f"{category.label} ({category.score:.1%})"
+                        category.label
                         for category in evidence.categories
                     )
-                    st.info(f"{evidence.text}\n\n{labels}")
+                    st.info(f"{evidence.text}\n\nCategories: {labels}")
 
 
 def _analyse(extracted: ExtractedText, threshold: float) -> None:
@@ -89,7 +87,8 @@ def _render_web_input(threshold: float) -> None:
         st.warning(warning)
     rendering_note = " with browser rendering" if scraped.used_browser else ""
     st.caption(
-        f"Extracted {len(scraped.text.blocks)} blocks from the public page{rendering_note}."
+        f"Extracted {len(scraped.text.blocks)} readable sections from "
+        f"the public page{rendering_note}."
     )
     _analyse(scraped.text, threshold)
 
@@ -114,11 +113,18 @@ def _render_text_input(threshold: float) -> None:
 
 def _render_document_input(threshold: float) -> None:
     with st.form("document-form"):
-        upload = st.file_uploader(
-            "Upload a document",
-            max_upload_size=DOCUMENT_LIMITS.max_upload_bytes // (1024 * 1024),
-            help="ToxiScan accepts a wide range of documents and extracts readable text locally.",
-        )
+        uploader_options = {
+            "label": "Upload a document",
+            "help": (
+                "ToxiScan accepts a wide range of documents and extracts readable "
+                "text locally."
+            ),
+        }
+        if "max_upload_size" in signature(st.file_uploader).parameters:
+            uploader_options["max_upload_size"] = (
+                DOCUMENT_LIMITS.max_upload_bytes // (1024 * 1024)
+            )
+        upload = st.file_uploader(**uploader_options)
         submitted = st.form_submit_button("Analyse document", type="primary")
 
     if not submitted:
@@ -129,7 +135,10 @@ def _render_document_input(threshold: float) -> None:
 
     with st.spinner("Reading and validating the document…"):
         extracted = extract_document(upload.name, upload.getvalue())
-    st.caption(f"Extracted {len(extracted.blocks)} readable blocks from the document.")
+    st.caption(
+        f"Extracted {len(extracted.blocks)} readable sections "
+        "from the document."
+    )
     _analyse(extracted, threshold)
 
 
@@ -145,14 +154,14 @@ def main() -> None:
         st.header("Detection settings")
         threshold = st.slider(
             "Detection threshold",
-            min_value=0.30,
+            min_value=0.50,
             max_value=0.90,
-            value=0.50,
+            value=0.70,
             step=0.05,
-            help="Lower values flag more content; higher values require stronger model confidence.",
+            help="Lower values flag more content; higher values require stronger evidence.",
         )
         st.caption(
-            "Automated scores are indicators, not definitive judgements. Review context before acting."
+            "Automated results are indicators, not definitive judgements. Review context before acting."
         )
 
     mode = st.radio(
