@@ -30,7 +30,7 @@ class ToxiScanDesktop(tk.Tk):
         self.title("🛡️ ToxiScan")
         self.geometry("920x780")
         self.configure(bg="#f0f0f0")
-        self.threshold = tk.DoubleVar(value=0.7)
+        self.threshold = tk.DoubleVar(value=0.75)
         self.status = tk.StringVar(value="Ready")
         self._build_layout()
 
