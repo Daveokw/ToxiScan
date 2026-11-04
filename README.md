@@ -73,6 +73,8 @@ python -m pip_audit --requirement requirements.txt
 
 The test suite uses model, network, and browser doubles, so routine tests do not download model weights or scrape live sites. GitHub Actions runs the same tests, linting, and dependency audits with read-only repository permissions.
 
+The monthly `Record Repository Activity` workflow updates `.github/repository-heartbeat.txt` on the first day of each month at 03:17 UTC so the repository stays active even when no code is being developed. It can also be triggered manually from the **Actions** tab. GitHub may automatically disable scheduled workflows in a public repository after roughly 60 days without repository activity; the heartbeat runs well before that limit to keep all scheduled workflows enabled.
+
 ## Responsible use and limitations
 
 Automated classifications are probabilistic indicators, not factual or legal judgements. Sarcasm, reclaimed language, quotations, dialect, coded language, and cultural context can produce false positives or false negatives. Review surrounding context and apply human oversight before moderating users or taking consequential action.
